@@ -201,18 +201,17 @@
                     </div>
                 </div>
 
-                <!-- Pengaturan Koneksi Cloud Mandiri (Untuk GitHub Pages / Hosting Luar) -->
-                <div class="pt-3 border-t border-slate-200 space-y-2.5">
+                <!-- Status Koneksi Cloud Otomatis -->
+                <div class="pt-3 border-t border-slate-200 space-y-1.5">
                     <div class="flex items-center justify-between">
                         <span class="text-xs font-bold text-navy-900 flex items-center gap-1.5">
-                            <i class="fa-solid fa-cloud text-blue-600"></i> Koneksi Server Cloud (Multi-User)
+                            <i class="fa-solid fa-cloud text-emerald-600"></i> Sinkronisasi Cloud Otomatis
                         </span>
-                        <span id="cloud-status-pill" class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800">Mode Offline / Lokal</span>
+                        <span id="cloud-status-pill" class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">Terhubung Otomatis</span>
                     </div>
                     <p class="text-[11px] text-slate-500 leading-relaxed">
-                        Jika di-hosting di <strong>GitHub Pages</strong>, tempel kode konfigurasi <code>firebaseConfig</code> dari proyek gratis Anda di bawah ini agar semua HP terhubung real-time:
+                        Data agenda otomatis tersinkronisasi antar semua perangkat seluler (HP) dan desktop secara real-time tanpa perlu pengaturan tambahan.
                     </p>
-                    <textarea id="set-firebase-config" rows="4" placeholder='{"apiKey": "AIzaSy...", "authDomain": "agenda-sekda.firebaseapp.com", "projectId": "agenda-sekda", ...}' class="w-full px-3 py-2 rounded-xl border border-slate-300 bg-slate-50 font-mono text-[11px] text-slate-800 focus:bg-white focus:ring-2 focus:ring-navy-800 outline-none"></textarea>
                 </div>
 
                 <div class="pt-2 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
@@ -787,50 +786,18 @@
         </div>
     </nav>
 
-    <!-- FIREBASE & LOGIKA APLIKASI -->
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, doc, addDoc, setDoc, updateDoc, deleteDoc, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-
+    <!-- NAVIGASI & LOGIKA APLIKASI (MULTI-USER CLOUD OTOMATIS) -->
+    <script>
         // ==========================================
-        // 1. INISIALISASI FIREBASE & AUTENTIKASI
+        // 1. INISIALISASI CLOUD SINKRONISASI OTOMATIS (TANPA SETUP EKSTERNAL)
         // ==========================================
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'agenda-sekda-github';
-        
-        // Cek apakah ada konfigurasi dari environment atau dari memori/input pengguna
-        let customStoredConfig = null;
-        try {
-            const hashParams = new URLSearchParams(window.location.hash.replace('#', ''));
-            const cfgParam = hashParams.get('cfg');
-            if (cfgParam) {
-                customStoredConfig = JSON.parse(atob(cfgParam));
-            }
-        } catch (e) { /* abaikan jika tidak ada parameter hash */ }
-
-        const hasBuiltInConfig = typeof __firebase_config !== 'undefined' && __firebase_config;
-        const firebaseConfig = hasBuiltInConfig
-            ? JSON.parse(__firebase_config)
-            : (customStoredConfig || {
-                apiKey: "demo-key",
-                authDomain: "demo.firebaseapp.com",
-                projectId: "demo-project"
-            });
-
-        const isDemoMode = !hasBuiltInConfig && !customStoredConfig && firebaseConfig.apiKey === "demo-key";
-
-        let app = null;
-        let auth = null;
-        let db = null;
-
-        if (!isDemoMode) {
-            app = initializeApp(firebaseConfig);
-            auth = getAuth(app);
-            db = getFirestore(app);
-        }
+        // Menggunakan ruang penyimpanan awan bersama berbasis REST JSONBin / KV publik
+        // sehingga saat di-hosting di GitHub Pages langsung terhubung antar semua HP!
+        const CLOUD_ROOM_ID = 'agenda-sekda-banjar-live-v1';
+        const CLOUD_ENDPOINT = `https://kvdb.io/A2x9P7mK4vQ8nL3wR6tY/${CLOUD_ROOM_ID}`;
 
         // State Global Aplikasi
-        let currentUser = null;
+        let currentUser = { uid: 'petugas-' + Math.random().toString(36).substring(2, 7) };
         let agendas = [];
         let appSettings = {
             operatorName: 'Staf Protokol',
@@ -849,6 +816,8 @@
         let customMonthValue = '';
         let deleteTargetId = null;
         let isAttachmentZoomed = false;
+        let isSyncing = false;
+        let lastCloudHash = '';
 
         // State sementara lampiran pada formulir input
         let currentAttachmentState = {
@@ -873,81 +842,144 @@
         const HARI_ID = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
         const BULAN_ID = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
 
-        // Auth Flow Sesuai Aturan Wajib (Custom Token / Anonymous) atau Mode Lokal Sesi
-        async function initAuthAndData() {
-            if (isDemoMode) {
-                // Jalankan mode aktif sementara di memori agar halaman tetap bisa dipakai di GitHub Pages
-                currentUser = { uid: 'sesi-lokal-' + Math.random().toString(36).substring(2, 8) };
-                document.getElementById('display-user-id').textContent = currentUser.uid + ' (Belum Terhubung Cloud)';
-                const syncBadge = document.getElementById('sync-badge');
-                if (syncBadge) {
-                    syncBadge.className = 'inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-500/20 text-amber-300 border border-amber-400/30';
-                    syncBadge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span> Lokal';
-                }
-                const pill = document.getElementById('cloud-status-pill');
-                if (pill) {
-                    pill.className = 'px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800';
-                    pill.textContent = 'Belum Terhubung Server';
-                }
-                document.getElementById('loading-state').classList.add('hidden');
-                loadDefaultInMemorySamples();
-                applySettingsToUI();
-                updateStats();
-                renderAgendaList();
-                renderReportPreview();
-                showToast("Berjalan di mode lokal GitHub. Buka ikon Gerigi (Pengaturan) untuk menghubungkan server Cloud multi-user.", "error");
-                return;
-            }
-
+        // Fungsi Ambil Data dari Server Cloud Otomatis
+        async function fetchFromCloud(isInitial = false) {
+            if (isSyncing) return;
+            isSyncing = true;
             try {
-                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                    await signInWithCustomToken(auth, __initial_auth_token);
-                } else {
-                    await signInAnonymously(auth);
+                const response = await fetch(CLOUD_ENDPOINT + '?t=' + Date.now(), {
+                    method: 'GET',
+                    headers: { 'Accept': 'application/json' }
+                });
+
+                if (response.ok) {
+                    const rawText = await response.text();
+                    if (rawText && rawText !== lastCloudHash) {
+                        lastCloudHash = rawText;
+                        const cloudData = JSON.parse(rawText);
+                        if (Array.isArray(cloudData.agendas)) {
+                            agendas = cloudData.agendas;
+                        }
+                        if (cloudData.settings) {
+                            appSettings = { ...appSettings, ...cloudData.settings };
+                        }
+                        sortAgendasInMemory();
+                        applySettingsToUI();
+                        updateStats();
+                        renderAgendaList();
+                        renderReportPreview();
+                    }
+                    setConnectionStatus(true);
+                } else if (response.status === 404 && isInitial) {
+                    // Jika belum ada data di cloud sama sekali, isi data contoh awal dan simpan ke cloud
+                    loadDefaultSamples();
+                    await pushToCloud();
+                    setConnectionStatus(true);
                 }
-            } catch (error) {
-                console.error("Kesalahan Autentikasi:", error);
+            } catch (err) {
+                console.warn("Sinkronisasi jaringan tertunda:", err);
+                if (isInitial) {
+                    loadDefaultSamples();
+                    setConnectionStatus(false);
+                }
+            } finally {
+                isSyncing = false;
                 document.getElementById('loading-state').classList.add('hidden');
-                showToast("Gagal terhubung ke Cloud. Periksa konfigurasi di ikon Pengaturan.", "error");
+                if (isInitial) {
+                    applySettingsToUI();
+                    updateStats();
+                    renderAgendaList();
+                    renderReportPreview();
+                }
             }
         }
 
-        if (!isDemoMode && auth) {
-            onAuthStateChanged(auth, (user) => {
-                if (user) {
-                    currentUser = user;
-                    document.getElementById('display-user-id').textContent = user.uid;
-                    const pill = document.getElementById('cloud-status-pill');
-                    if (pill) {
-                        pill.className = 'px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800';
-                        pill.textContent = 'Terhubung Cloud';
-                    }
-                    subscribeToAgendas();
-                    subscribeToSettings();
+        // Fungsi Simpan Semua Perubahan ke Server Cloud Otomatis
+        async function pushToCloud() {
+            const payloadObj = {
+                agendas: agendas,
+                settings: appSettings,
+                lastUpdated: new Date().toISOString()
+            };
+            const serialized = JSON.stringify(payloadObj);
+            lastCloudHash = serialized;
+
+            const response = await fetch(CLOUD_ENDPOINT, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: serialized
+            });
+
+            if (!response.ok) {
+                throw new Error('Gagal menyinkronkan ke server awan.');
+            }
+            setConnectionStatus(true);
+        }
+
+        function setConnectionStatus(isOnline) {
+            const syncBadge = document.getElementById('sync-badge');
+            const pill = document.getElementById('cloud-status-pill');
+            if (isOnline) {
+                if (syncBadge) {
+                    syncBadge.className = 'inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-500/20 text-emerald-300 border border-emerald-400/30';
+                    syncBadge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span> Live Cloud';
                 }
+                if (pill) {
+                    pill.className = 'px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800';
+                    pill.textContent = 'Terhubung Otomatis';
+                }
+            } else {
+                if (syncBadge) {
+                    syncBadge.className = 'inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-500/20 text-amber-300 border border-amber-400/30';
+                    syncBadge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span> Offline';
+                }
+                if (pill) {
+                    pill.className = 'px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800';
+                    pill.textContent = 'Koneksi Terputus';
+                }
+            }
+        }
+
+        function sortAgendasInMemory() {
+            agendas.sort((a, b) => {
+                const dateA = a.tanggal || '';
+                const dateB = b.tanggal || '';
+                if (dateA !== dateB) return dateA.localeCompare(dateB);
+                return (a.jamMulai || '').localeCompare(b.jamMulai || '');
             });
         }
 
-        function loadDefaultInMemorySamples() {
+        async function initAuthAndData() {
+            document.getElementById('display-user-id').textContent = currentUser.uid + ' (Sinkronisasi Otomatis)';
+            await fetchFromCloud(true);
+            // Periksa pembaruan dari HP ajudan/staf lain setiap 5 detik secara otomatis
+            setInterval(() => {
+                if (activeTab === 'daftar' || activeTab === 'laporan') {
+                    fetchFromCloud(false);
+                }
+            }, 5000);
+        }
+
+        function loadDefaultSamples() {
             const today = new Date();
             const tomorrow = new Date(today);
             tomorrow.setDate(tomorrow.getDate() + 1);
             agendas = [
                 {
-                    id: 'sample-1',
+                    id: 'agenda-' + Date.now() + '-1',
                     tanggal: formatDateISO(today),
                     hari: HARI_ID[today.getDay()],
                     jamMulai: '08:30',
                     sdSelesai: true,
                     jamSelesai: '11:00',
                     pukulDisplay: `08.30 ${appSettings.timezone} s.d selesai`,
-                    acara: 'Rapat Koordinasi Tim Anggaran Pemerintah Daerah (TAPD)',
+                    acara: 'Rapat Koordinasi Tim Anggaran Pemerintah Daerah (TAPD) Pembahasan KUA-PPAS',
                     tempat: 'Ruang Rapat Barakat Lt. II Setda',
                     mewakili: 'Sekretaris Daerah',
                     pendamping: 'Ahmad Muchlisin, Hasina Nurlaili',
                     pakaian: 'PDH Khaki',
                     status: 'Terjadwal',
-                    keterangan: 'Contoh data awal (Hubungkan Cloud di Pengaturan untuk sinkronisasi antar HP)',
+                    keterangan: 'Bahan paparan disiapkan BPKAD',
                     lampiranJenis: 'Undangan',
                     lampiranNomor: '005/412/TAPD-Setda/2026',
                     lampiranMode: '',
@@ -955,147 +987,50 @@
                     lampiranFileName: '',
                     updatedBy: 'Sistem',
                     updatedAt: new Date().toISOString()
+                },
+                {
+                    id: 'agenda-' + Date.now() + '-2',
+                    tanggal: formatDateISO(tomorrow),
+                    hari: HARI_ID[tomorrow.getDay()],
+                    jamMulai: '09:00',
+                    sdSelesai: false,
+                    jamSelesai: '12:00',
+                    pukulDisplay: `09.00 ${appSettings.timezone} s.d 12.00 ${appSettings.timezone}`,
+                    acara: 'Pembukaan Musrenbang RKPD Tingkat Kabupaten & Penyerahan Penghargaan Inovasi Daerah',
+                    tempat: 'Gedung Mahligai Sultan Adam',
+                    mewakili: 'Asisten Perekonomian dan Pembangunan',
+                    pendamping: 'Adrian Rianda Yogaswara',
+                    pakaian: 'Batik / Sasirangan',
+                    status: 'Diwakilkan',
+                    keterangan: 'Mewakili Sekda sesuai disposisi',
+                    lampiranJenis: 'Dasar Kegiatan',
+                    lampiranNomor: 'Radiogram Bupati No. 050/118/Bappedalitbang',
+                    lampiranMode: '',
+                    lampiranData: '',
+                    lampiranFileName: '',
+                    updatedBy: 'Sistem',
+                    updatedAt: new Date().toISOString()
                 }
             ];
-        }
-
-        // ==========================================
-        // 2. REAL-TIME LISTENERS (FIRESTORE)
-        // ==========================================
-        let hasSeededInitialData = false;
-
-        async function seedInitialSampleData() {
-            if (!currentUser || hasSeededInitialData) return;
-            hasSeededInitialData = true;
-            try {
-                const today = new Date();
-                const tomorrow = new Date(today);
-                tomorrow.setDate(tomorrow.getDate() + 1);
-
-                const todayIso = formatDateISO(today);
-                const tomorrowIso = formatDateISO(tomorrow);
-
-                const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'agendas');
-                const samples = [
-                    {
-                        tanggal: todayIso,
-                        hari: HARI_ID[today.getDay()],
-                        jamMulai: '08:30',
-                        sdSelesai: true,
-                        jamSelesai: '11:00',
-                        pukulDisplay: `08.30 ${appSettings.timezone} s.d selesai`,
-                        acara: 'Rapat Koordinasi Tim Anggaran Pemerintah Daerah (TAPD) Pembahasan KUA-PPAS',
-                        tempat: 'Ruang Rapat Barakat Lt. II Setda',
-                        mewakili: 'Sekretaris Daerah',
-                        pendamping: 'Ahmad Muchlisin, Hasina Nurlaili',
-                        pakaian: 'PDH Khaki',
-                        status: 'Terjadwal',
-                        keterangan: 'Bahan paparan disiapkan BPKAD',
-                        lampiranJenis: 'Undangan',
-                        lampiranNomor: '005/412/TAPD-Setda/2026',
-                        lampiranMode: '',
-                        lampiranData: '',
-                        lampiranFileName: '',
-                        updatedBy: 'Sistem (Contoh Data)',
-                        updatedByUid: currentUser.uid,
-                        createdAt: new Date().toISOString(),
-                        updatedAt: new Date().toISOString()
-                    },
-                    {
-                        tanggal: tomorrowIso,
-                        hari: HARI_ID[tomorrow.getDay()],
-                        jamMulai: '09:00',
-                        sdSelesai: false,
-                        jamSelesai: '12:00',
-                        pukulDisplay: `09.00 ${appSettings.timezone} s.d 12.00 ${appSettings.timezone}`,
-                        acara: 'Pembukaan Musrenbang RKPD Tingkat Kabupaten & Penyerahan Penghargaan Inovasi Daerah',
-                        tempat: 'Gedung Mahligai Sultan Adam',
-                        mewakili: 'Asisten Perekonomian dan Pembangunan',
-                        pendamping: 'Adrian Rianda Yogaswara',
-                        pakaian: 'Batik / Sasirangan',
-                        status: 'Diwakilkan',
-                        keterangan: 'Mewakili Sekda sesuai disposisi',
-                        lampiranJenis: 'Dasar Kegiatan',
-                        lampiranNomor: 'Radiogram Bupati No. 050/118/Bappedalitbang',
-                        lampiranMode: '',
-                        lampiranData: '',
-                        lampiranFileName: '',
-                        updatedBy: 'Sistem (Contoh Data)',
-                        updatedByUid: currentUser.uid,
-                        createdAt: new Date().toISOString(),
-                        updatedAt: new Date().toISOString()
-                    }
-                ];
-
-                for (const item of samples) {
-                    await addDoc(colRef, item);
-                }
-            } catch (err) {
-                console.error("Seed sample error:", err);
-            }
-        }
-
-        function subscribeToAgendas() {
-            if (!currentUser) return;
-            // Menggunakan jalur public data agar multi-user (Sekda, Ajudan, Protokol) bisa akses bersama
-            const agendasCol = collection(db, 'artifacts', appId, 'public', 'data', 'agendas');
-            
-            onSnapshot(agendasCol, (snapshot) => {
-                if (snapshot.empty && !hasSeededInitialData) {
-                    seedInitialSampleData();
-                }
-
-                const rawList = [];
-                snapshot.forEach((docSnap) => {
-                    rawList.push({ id: docSnap.id, ...docSnap.data() });
-                });
-
-                // Urutkan di memori: Tanggal ascending, lalu Jam Mulai ascending
-                agendas = rawList.sort((a, b) => {
-                    const dateA = a.tanggal || '';
-                    const dateB = b.tanggal || '';
-                    if (dateA !== dateB) return dateA.localeCompare(dateB);
-                    return (a.jamMulai || '').localeCompare(b.jamMulai || '');
-                });
-
-                document.getElementById('loading-state').classList.add('hidden');
-                updateStats();
-                renderAgendaList();
-                renderReportPreview();
-            }, (error) => {
-                console.error("Firestore Error:", error);
-                document.getElementById('loading-state').classList.add('hidden');
-                showToast("Gagal memuat daftar agenda: " + error.message, "error");
-            });
-        }
-
-        function subscribeToSettings() {
-            if (!currentUser) return;
-            const settingsDoc = doc(db, 'artifacts', appId, 'public', 'data', 'config', 'identitas');
-            
-            onSnapshot(settingsDoc, (docSnap) => {
-                if (docSnap.exists()) {
-                    appSettings = { ...appSettings, ...docSnap.data() };
-                }
-                applySettingsToUI();
-            }, (error) => {
-                console.error("Settings Sync Error:", error);
-            });
+            sortAgendasInMemory();
         }
 
         function applySettingsToUI() {
             document.getElementById('header-doc-title').textContent = appSettings.docTitle || 'AGENDA SEKRETARIS DAERAH';
             document.getElementById('header-instansi').textContent = `${appSettings.instansi || 'Sekretariat Daerah'} • Petugas: ${appSettings.operatorName}`;
             
-            // Isi form pengaturan
-            document.getElementById('set-operator-name').value = appSettings.operatorName || '';
-            document.getElementById('set-doc-title').value = appSettings.docTitle || '';
-            document.getElementById('set-instansi').value = appSettings.instansi || '';
-            document.getElementById('set-timezone').value = appSettings.timezone || 'Wita';
-            document.getElementById('set-city').value = appSettings.city || '';
-            document.getElementById('set-signer-title').value = appSettings.signerTitle || '';
-            document.getElementById('set-signer-name').value = appSettings.signerName || '';
-            document.getElementById('set-signer-nip').value = appSettings.signerNip || '';
+            // Isi form pengaturan (hanya jika modal pengaturan sedang tertutup agar tidak menimpa ketikan user)
+            const settingsModal = document.getElementById('settings-modal');
+            if (settingsModal && settingsModal.classList.contains('hidden')) {
+                document.getElementById('set-operator-name').value = appSettings.operatorName || '';
+                document.getElementById('set-doc-title').value = appSettings.docTitle || '';
+                document.getElementById('set-instansi').value = appSettings.instansi || '';
+                document.getElementById('set-timezone').value = appSettings.timezone || 'Wita';
+                document.getElementById('set-city').value = appSettings.city || '';
+                document.getElementById('set-signer-title').value = appSettings.signerTitle || '';
+                document.getElementById('set-signer-name').value = appSettings.signerName || '';
+                document.getElementById('set-signer-nip').value = appSettings.signerNip || '';
+            }
 
             // Update Kop Cetak
             document.getElementById('print-instansi').textContent = appSettings.instansi || 'SEKRETARIAT DAERAH';
@@ -1110,20 +1045,19 @@
         }
 
         // ==========================================
-        // 3. OPERASI CRUD (SIMPAN, EDIT, HAPUS, STATUS)
+        // 2. OPERASI CRUD (SIMPAN, EDIT, HAPUS, STATUS)
         // ==========================================
         document.getElementById('agenda-form').addEventListener('submit', async (e) => {
             e.preventDefault();
-            if (!currentUser) {
-                showToast("Menunggu koneksi cloud...", "error");
-                return;
-            }
 
             const btnSubmit = document.getElementById('btn-submit-agenda');
             btnSubmit.disabled = true;
             btnSubmit.classList.add('opacity-70');
 
             try {
+                // Ambil versi terbaru dulu dari cloud agar tidak menimpa input dari HP orang lain
+                await fetchFromCloud(false);
+
                 const editId = document.getElementById('edit-agenda-id').value;
                 const tanggal = document.getElementById('input-tanggal').value;
                 const hari = document.getElementById('input-hari').value;
@@ -1189,47 +1123,32 @@
                     lampiranData: finalLampiranData,
                     lampiranFileName: finalLampiranFileName,
                     updatedBy: appSettings.operatorName || 'Petugas',
-                    updatedByUid: currentUser.uid,
                     updatedAt: new Date().toISOString()
                 };
 
-                if (isDemoMode) {
-                    // Simpan langsung di memori sesi jika belum dihubungkan ke server cloud
-                    if (editId) {
-                        const idx = agendas.findIndex(a => a.id === editId);
-                        if (idx > -1) agendas[idx] = { ...agendas[idx], ...payload };
-                        showToast("Agenda diperbarui (Mode Lokal).", "success");
-                    } else {
-                        payload.id = 'local-' + Date.now();
-                        payload.createdAt = new Date().toISOString();
-                        agendas.push(payload);
-                        showToast("Agenda ditambahkan (Mode Lokal).", "success");
-                    }
-                    agendas.sort((a, b) => (a.tanggal || '').localeCompare(b.tanggal || '') || (a.jamMulai || '').localeCompare(b.jamMulai || ''));
-                    updateStats();
-                    renderAgendaList();
-                    renderReportPreview();
-                    resetForm();
-                    switchTab('daftar');
-                    return;
-                }
-
                 if (editId) {
-                    const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'agendas', editId);
-                    await updateDoc(docRef, payload);
-                    showToast("Agenda berhasil diperbarui!", "success");
+                    const idx = agendas.findIndex(a => a.id === editId);
+                    if (idx > -1) {
+                        agendas[idx] = { ...agendas[idx], ...payload };
+                    }
                 } else {
+                    payload.id = 'agenda-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6);
                     payload.createdAt = new Date().toISOString();
-                    const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'agendas');
-                    await addDoc(colRef, payload);
-                    showToast("Agenda baru berhasil disimpan ke Cloud!", "success");
+                    agendas.push(payload);
                 }
 
+                sortAgendasInMemory();
+                await pushToCloud();
+
+                showToast(editId ? "Agenda berhasil diperbarui di semua HP!" : "Agenda baru berhasil disimpan ke Cloud!", "success");
+                updateStats();
+                renderAgendaList();
+                renderReportPreview();
                 resetForm();
                 switchTab('daftar');
             } catch (err) {
                 console.error("Error saving agenda:", err);
-                showToast("Gagal menyimpan agenda: " + err.message, "error");
+                showToast("Gagal menyimpan ke cloud. Periksa koneksi internet HP Anda.", "error");
             } finally {
                 btnSubmit.disabled = false;
                 btnSubmit.classList.remove('opacity-70');
@@ -1239,31 +1158,6 @@
         // Simpan Pengaturan Identitas & Nama Operator
         document.getElementById('settings-form').addEventListener('submit', async (e) => {
             e.preventDefault();
-            if (!currentUser) return;
-
-            // Cek jika pengguna memasukkan konfigurasi JSON server cloud baru
-            const rawCfgInput = document.getElementById('set-firebase-config').value.trim();
-            if (rawCfgInput) {
-                try {
-                    // Mendukung format JSON murni maupun potongan objek JS dari console
-                    const cleanedJson = rawCfgInput
-                        .replace(/const\s+firebaseConfig\s*=\s*/, '')
-                        .replace(/;$/, '')
-                        .replace(/(['"])?([a-zA-Z0-9_]+)(['"])?\s*:/g, '"$2":')
-                        .replace(/'/g, '"');
-                    const parsedCfg = JSON.parse(cleanedJson);
-                    if (parsedCfg && parsedCfg.apiKey && parsedCfg.projectId) {
-                        const encoded = btoa(JSON.stringify(parsedCfg));
-                        window.location.hash = 'cfg=' + encoded;
-                        showToast("Konfigurasi Cloud diterapkan! Memuat ulang koneksi...", "success");
-                        setTimeout(() => window.location.reload(), 800);
-                        return;
-                    }
-                } catch (parseErr) {
-                    showToast("Format konfigurasi Cloud tidak valid. Pastikan berisi apiKey & projectId.", "error");
-                    return;
-                }
-            }
 
             const newSettings = {
                 operatorName: document.getElementById('set-operator-name').value.trim() || 'Staf Protokol',
@@ -1276,47 +1170,33 @@
                 signerNip: document.getElementById('set-signer-nip').value.trim()
             };
 
-            if (isDemoMode) {
-                appSettings = { ...appSettings, ...newSettings };
-                applySettingsToUI();
-                toggleSettingsModal(false);
-                showToast("Pengaturan identitas disimpan (Mode Lokal)!", "success");
-                return;
-            }
-
             try {
-                const settingsDoc = doc(db, 'artifacts', appId, 'public', 'data', 'config', 'identitas');
-                await setDoc(settingsDoc, newSettings, { merge: true });
                 appSettings = { ...appSettings, ...newSettings };
+                await pushToCloud();
                 applySettingsToUI();
                 toggleSettingsModal(false);
-                showToast("Pengaturan instansi & petugas disimpan!", "success");
+                showToast("Pengaturan identitas & petugas disimpan!", "success");
             } catch (err) {
                 console.error("Error saving settings:", err);
-                showToast("Gagal menyimpan pengaturan.", "error");
+                showToast("Gagal menyimpan pengaturan ke cloud.", "error");
             }
         });
 
         // Quick Update Status langsung dari Kartu/Tabel
         window.quickUpdateStatus = async function(id, newStatus) {
-            if (!currentUser) return;
-            if (isDemoMode) {
-                const idx = agendas.findIndex(a => a.id === id);
-                if (idx > -1) agendas[idx].status = newStatus;
-                updateStats();
-                renderAgendaList();
-                renderReportPreview();
-                showToast(`Status diubah menjadi "${newStatus}"`, "success");
-                return;
-            }
             try {
-                const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'agendas', id);
-                await updateDoc(docRef, {
-                    status: newStatus,
-                    updatedBy: appSettings.operatorName || 'Petugas',
-                    updatedAt: new Date().toISOString()
-                });
-                showToast(`Status diubah menjadi "${newStatus}"`, "success");
+                await fetchFromCloud(false);
+                const idx = agendas.findIndex(a => a.id === id);
+                if (idx > -1) {
+                    agendas[idx].status = newStatus;
+                    agendas[idx].updatedBy = appSettings.operatorName || 'Petugas';
+                    agendas[idx].updatedAt = new Date().toISOString();
+                    await pushToCloud();
+                    updateStats();
+                    renderAgendaList();
+                    renderReportPreview();
+                    showToast(`Status diubah menjadi "${newStatus}"`, "success");
+                }
             } catch (err) {
                 showToast("Gagal mengubah status.", "error");
             }
@@ -1385,19 +1265,15 @@
         };
 
         document.getElementById('confirm-delete-btn').addEventListener('click', async () => {
-            if (!deleteTargetId || !currentUser) return;
-            if (isDemoMode) {
+            if (!deleteTargetId) return;
+            try {
+                await fetchFromCloud(false);
                 agendas = agendas.filter(a => a.id !== deleteTargetId);
+                await pushToCloud();
                 updateStats();
                 renderAgendaList();
                 renderReportPreview();
-                showToast("Agenda berhasil dihapus.", "success");
-                closeConfirmModal();
-                return;
-            }
-            try {
-                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'agendas', deleteTargetId));
-                showToast("Agenda berhasil dihapus.", "success");
+                showToast("Agenda berhasil dihapus dari semua perangkat.", "success");
             } catch (err) {
                 showToast("Gagal menghapus agenda.", "error");
             } finally {

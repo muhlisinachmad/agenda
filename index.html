@@ -201,8 +201,22 @@
                     </div>
                 </div>
 
-                <div class="pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
-                    <span>ID Sesi Cloud: <code id="display-user-id" class="bg-slate-100 px-1.5 py-0.5 rounded text-slate-700 font-mono text-[10px]">Menghubungkan...</code></span>
+                <!-- Pengaturan Koneksi Cloud Mandiri (Untuk GitHub Pages / Hosting Luar) -->
+                <div class="pt-3 border-t border-slate-200 space-y-2.5">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-bold text-navy-900 flex items-center gap-1.5">
+                            <i class="fa-solid fa-cloud text-blue-600"></i> Koneksi Server Cloud (Multi-User)
+                        </span>
+                        <span id="cloud-status-pill" class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800">Mode Offline / Lokal</span>
+                    </div>
+                    <p class="text-[11px] text-slate-500 leading-relaxed">
+                        Jika di-hosting di <strong>GitHub Pages</strong>, tempel kode konfigurasi <code>firebaseConfig</code> dari proyek gratis Anda di bawah ini agar semua HP terhubung real-time:
+                    </p>
+                    <textarea id="set-firebase-config" rows="4" placeholder='{"apiKey": "AIzaSy...", "authDomain": "agenda-sekda.firebaseapp.com", "projectId": "agenda-sekda", ...}' class="w-full px-3 py-2 rounded-xl border border-slate-300 bg-slate-50 font-mono text-[11px] text-slate-800 focus:bg-white focus:ring-2 focus:ring-navy-800 outline-none"></textarea>
+                </div>
+
+                <div class="pt-2 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
+                    <span>ID Sesi: <code id="display-user-id" class="bg-slate-100 px-1.5 py-0.5 rounded text-slate-700 font-mono text-[10px]">Menghubungkan...</code></span>
                 </div>
 
                 <div class="flex gap-3 pt-2">
@@ -782,24 +796,46 @@
         // ==========================================
         // 1. INISIALISASI FIREBASE & AUTENTIKASI
         // ==========================================
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'agenda-sekda-default';
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
-            apiKey: "demo-key",
-            authDomain: "demo.firebaseapp.com",
-            projectId: "demo-project"
-        };
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'agenda-sekda-github';
+        
+        // Cek apakah ada konfigurasi dari environment atau dari memori/input pengguna
+        let customStoredConfig = null;
+        try {
+            const hashParams = new URLSearchParams(window.location.hash.replace('#', ''));
+            const cfgParam = hashParams.get('cfg');
+            if (cfgParam) {
+                customStoredConfig = JSON.parse(atob(cfgParam));
+            }
+        } catch (e) { /* abaikan jika tidak ada parameter hash */ }
 
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
+        const hasBuiltInConfig = typeof __firebase_config !== 'undefined' && __firebase_config;
+        const firebaseConfig = hasBuiltInConfig
+            ? JSON.parse(__firebase_config)
+            : (customStoredConfig || {
+                apiKey: "demo-key",
+                authDomain: "demo.firebaseapp.com",
+                projectId: "demo-project"
+            });
+
+        const isDemoMode = !hasBuiltInConfig && !customStoredConfig && firebaseConfig.apiKey === "demo-key";
+
+        let app = null;
+        let auth = null;
+        let db = null;
+
+        if (!isDemoMode) {
+            app = initializeApp(firebaseConfig);
+            auth = getAuth(app);
+            db = getFirestore(app);
+        }
 
         // State Global Aplikasi
         let currentUser = null;
         let agendas = [];
         let appSettings = {
-            operatorName: 'Staf Protokol / Ajudan',
+            operatorName: 'Staf Protokol',
             docTitle: 'AGENDA SEKRETARIS DAERAH',
-            instansi: 'PEMERINTAH KABUPATEN / SEKRETARIAT DAERAH',
+            instansi: 'PEMERINTAH KABUPATEN BANJAR',
             timezone: 'Wita',
             city: 'Martapura',
             signerTitle: 'Kepala Bagian Protokol dan Komunikasi Pimpinan',
@@ -808,26 +844,21 @@
         };
 
         let activeTab = 'daftar';
-        let viewMode = 'card'; // 'card' atau 'table'
-        let dateFilter = 'all'; // 'all', 'today', 'tomorrow', 'week', 'month', 'custom-month'
+        let viewMode = 'card'; // 'card' | 'table'
+        let dateFilter = 'all'; // 'all' | 'today' | 'tomorrow' | 'week' | 'month' | 'custom-month'
         let customMonthValue = '';
         let deleteTargetId = null;
+        let isAttachmentZoomed = false;
 
-        // State Sementara Lampiran di Form Input
+        // State sementara lampiran pada formulir input
         let currentAttachmentState = {
             jenis: '',
             nomor: '',
-            mode: '', // 'image' | 'pdf' | 'url' | ''
-            data: '', // Base64 terkompresi (foto/pdf <750KB) atau URL
+            mode: '', // '' | 'image' | 'pdf' | 'url'
+            data: '',
             fileName: ''
         };
-        let isAttachmentZoomed = false;
 
-        // Nama Hari & Bulan Bahasa Indonesia
-        const HARI_ID = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
-        const BULAN_ID = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
-
-        // Daftar Resmi Ajudan Pendamping
         const DAFTAR_AJUDAN = [
             'Ahmad Muchlisin',
             'Adrian Rianda Yogaswara',
@@ -839,8 +870,35 @@
             'Hariswanto'
         ];
 
-        // Auth Flow Sesuai Aturan Wajib (Custom Token / Anonymous)
+        const HARI_ID = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+        const BULAN_ID = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
+
+        // Auth Flow Sesuai Aturan Wajib (Custom Token / Anonymous) atau Mode Lokal Sesi
         async function initAuthAndData() {
+            if (isDemoMode) {
+                // Jalankan mode aktif sementara di memori agar halaman tetap bisa dipakai di GitHub Pages
+                currentUser = { uid: 'sesi-lokal-' + Math.random().toString(36).substring(2, 8) };
+                document.getElementById('display-user-id').textContent = currentUser.uid + ' (Belum Terhubung Cloud)';
+                const syncBadge = document.getElementById('sync-badge');
+                if (syncBadge) {
+                    syncBadge.className = 'inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-500/20 text-amber-300 border border-amber-400/30';
+                    syncBadge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span> Lokal';
+                }
+                const pill = document.getElementById('cloud-status-pill');
+                if (pill) {
+                    pill.className = 'px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800';
+                    pill.textContent = 'Belum Terhubung Server';
+                }
+                document.getElementById('loading-state').classList.add('hidden');
+                loadDefaultInMemorySamples();
+                applySettingsToUI();
+                updateStats();
+                renderAgendaList();
+                renderReportPreview();
+                showToast("Berjalan di mode lokal GitHub. Buka ikon Gerigi (Pengaturan) untuk menghubungkan server Cloud multi-user.", "error");
+                return;
+            }
+
             try {
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                     await signInWithCustomToken(auth, __initial_auth_token);
@@ -849,18 +907,57 @@
                 }
             } catch (error) {
                 console.error("Kesalahan Autentikasi:", error);
-                showToast("Gagal menghubungkan ke server cloud.", "error");
+                document.getElementById('loading-state').classList.add('hidden');
+                showToast("Gagal terhubung ke Cloud. Periksa konfigurasi di ikon Pengaturan.", "error");
             }
         }
 
-        onAuthStateChanged(auth, (user) => {
-            if (user) {
-                currentUser = user;
-                document.getElementById('display-user-id').textContent = user.uid;
-                subscribeToAgendas();
-                subscribeToSettings();
-            }
-        });
+        if (!isDemoMode && auth) {
+            onAuthStateChanged(auth, (user) => {
+                if (user) {
+                    currentUser = user;
+                    document.getElementById('display-user-id').textContent = user.uid;
+                    const pill = document.getElementById('cloud-status-pill');
+                    if (pill) {
+                        pill.className = 'px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800';
+                        pill.textContent = 'Terhubung Cloud';
+                    }
+                    subscribeToAgendas();
+                    subscribeToSettings();
+                }
+            });
+        }
+
+        function loadDefaultInMemorySamples() {
+            const today = new Date();
+            const tomorrow = new Date(today);
+            tomorrow.setDate(tomorrow.getDate() + 1);
+            agendas = [
+                {
+                    id: 'sample-1',
+                    tanggal: formatDateISO(today),
+                    hari: HARI_ID[today.getDay()],
+                    jamMulai: '08:30',
+                    sdSelesai: true,
+                    jamSelesai: '11:00',
+                    pukulDisplay: `08.30 ${appSettings.timezone} s.d selesai`,
+                    acara: 'Rapat Koordinasi Tim Anggaran Pemerintah Daerah (TAPD)',
+                    tempat: 'Ruang Rapat Barakat Lt. II Setda',
+                    mewakili: 'Sekretaris Daerah',
+                    pendamping: 'Ahmad Muchlisin, Hasina Nurlaili',
+                    pakaian: 'PDH Khaki',
+                    status: 'Terjadwal',
+                    keterangan: 'Contoh data awal (Hubungkan Cloud di Pengaturan untuk sinkronisasi antar HP)',
+                    lampiranJenis: 'Undangan',
+                    lampiranNomor: '005/412/TAPD-Setda/2026',
+                    lampiranMode: '',
+                    lampiranData: '',
+                    lampiranFileName: '',
+                    updatedBy: 'Sistem',
+                    updatedAt: new Date().toISOString()
+                }
+            ];
+        }
 
         // ==========================================
         // 2. REAL-TIME LISTENERS (FIRESTORE)
@@ -1096,6 +1193,27 @@
                     updatedAt: new Date().toISOString()
                 };
 
+                if (isDemoMode) {
+                    // Simpan langsung di memori sesi jika belum dihubungkan ke server cloud
+                    if (editId) {
+                        const idx = agendas.findIndex(a => a.id === editId);
+                        if (idx > -1) agendas[idx] = { ...agendas[idx], ...payload };
+                        showToast("Agenda diperbarui (Mode Lokal).", "success");
+                    } else {
+                        payload.id = 'local-' + Date.now();
+                        payload.createdAt = new Date().toISOString();
+                        agendas.push(payload);
+                        showToast("Agenda ditambahkan (Mode Lokal).", "success");
+                    }
+                    agendas.sort((a, b) => (a.tanggal || '').localeCompare(b.tanggal || '') || (a.jamMulai || '').localeCompare(b.jamMulai || ''));
+                    updateStats();
+                    renderAgendaList();
+                    renderReportPreview();
+                    resetForm();
+                    switchTab('daftar');
+                    return;
+                }
+
                 if (editId) {
                     const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'agendas', editId);
                     await updateDoc(docRef, payload);
@@ -1123,6 +1241,30 @@
             e.preventDefault();
             if (!currentUser) return;
 
+            // Cek jika pengguna memasukkan konfigurasi JSON server cloud baru
+            const rawCfgInput = document.getElementById('set-firebase-config').value.trim();
+            if (rawCfgInput) {
+                try {
+                    // Mendukung format JSON murni maupun potongan objek JS dari console
+                    const cleanedJson = rawCfgInput
+                        .replace(/const\s+firebaseConfig\s*=\s*/, '')
+                        .replace(/;$/, '')
+                        .replace(/(['"])?([a-zA-Z0-9_]+)(['"])?\s*:/g, '"$2":')
+                        .replace(/'/g, '"');
+                    const parsedCfg = JSON.parse(cleanedJson);
+                    if (parsedCfg && parsedCfg.apiKey && parsedCfg.projectId) {
+                        const encoded = btoa(JSON.stringify(parsedCfg));
+                        window.location.hash = 'cfg=' + encoded;
+                        showToast("Konfigurasi Cloud diterapkan! Memuat ulang koneksi...", "success");
+                        setTimeout(() => window.location.reload(), 800);
+                        return;
+                    }
+                } catch (parseErr) {
+                    showToast("Format konfigurasi Cloud tidak valid. Pastikan berisi apiKey & projectId.", "error");
+                    return;
+                }
+            }
+
             const newSettings = {
                 operatorName: document.getElementById('set-operator-name').value.trim() || 'Staf Protokol',
                 docTitle: document.getElementById('set-doc-title').value.trim() || 'AGENDA SEKRETARIS DAERAH',
@@ -1133,6 +1275,14 @@
                 signerName: document.getElementById('set-signer-name').value.trim(),
                 signerNip: document.getElementById('set-signer-nip').value.trim()
             };
+
+            if (isDemoMode) {
+                appSettings = { ...appSettings, ...newSettings };
+                applySettingsToUI();
+                toggleSettingsModal(false);
+                showToast("Pengaturan identitas disimpan (Mode Lokal)!", "success");
+                return;
+            }
 
             try {
                 const settingsDoc = doc(db, 'artifacts', appId, 'public', 'data', 'config', 'identitas');
@@ -1150,6 +1300,15 @@
         // Quick Update Status langsung dari Kartu/Tabel
         window.quickUpdateStatus = async function(id, newStatus) {
             if (!currentUser) return;
+            if (isDemoMode) {
+                const idx = agendas.findIndex(a => a.id === id);
+                if (idx > -1) agendas[idx].status = newStatus;
+                updateStats();
+                renderAgendaList();
+                renderReportPreview();
+                showToast(`Status diubah menjadi "${newStatus}"`, "success");
+                return;
+            }
             try {
                 const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'agendas', id);
                 await updateDoc(docRef, {
@@ -1227,6 +1386,15 @@
 
         document.getElementById('confirm-delete-btn').addEventListener('click', async () => {
             if (!deleteTargetId || !currentUser) return;
+            if (isDemoMode) {
+                agendas = agendas.filter(a => a.id !== deleteTargetId);
+                updateStats();
+                renderAgendaList();
+                renderReportPreview();
+                showToast("Agenda berhasil dihapus.", "success");
+                closeConfirmModal();
+                return;
+            }
             try {
                 await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'agendas', deleteTargetId));
                 showToast("Agenda berhasil dihapus.", "success");
